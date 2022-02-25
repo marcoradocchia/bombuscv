@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-from typing import Tuple
 import cv2 as cv
 from datetime import datetime as dt
-from time import sleep
+from numpy import ndarray
+from typing import Tuple
 from os.path import splitext
 
 filename = "test.mp4"
@@ -53,14 +53,28 @@ def get_video_type(filename: str) -> cv.VideoWriter_fourcc:
     return VIDEO_TYPE["avi"]  # default in case filename has no extension
 
 
+def write_frame(out: cv.VideoWriter, frame: ndarray) -> None:
+    cloned_frame = frame.copy()
+    cloned_frame = cv.putText(
+        cloned_frame,  # frame to write on
+        dt.now().strftime("%d/%m/%Y %H:%M:%S"),  # displayed text
+        (10, 40),  # position on frame
+        cv.FONT_HERSHEY_SIMPLEX,  # font
+        1,  # font size
+        (255, 255, 255),  # font color
+        2  # stroke
+    )
+    out.write(cloned_frame)
+
+
 def main() -> None:
     cap = cv.VideoCapture(0)
     dims = get_dims(cap, res)
     video_type = get_video_type(filename)
     out = cv.VideoWriter(filename, video_type, frames_per_second, dims)
 
-    motion = False
-    recording = False
+    # motion = False
+    # recording = False
     _, prev_frame = cap.read()
     _, frame = cap.read()
 
@@ -76,8 +90,8 @@ def main() -> None:
             )
             # if contours are detected, then motion occours
             if len(contours) > 0:
-                out.write(frame)
-                motion = True
+                write_frame(out=out, frame=frame)
+                # motion = True
             # if motion != recording:
             #     # motion detected but recording is not running, so start
             #     # recording

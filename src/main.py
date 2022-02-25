@@ -21,6 +21,7 @@ STD_DIMENSIONS = {
 VIDEO_TYPE = {
     "avi": cv.VideoWriter_fourcc(*"XVID"),
     "mp4": cv.VideoWriter_fourcc(*"XVID"),
+    "mkv": cv.VideoWriter_fourcc(*"XVID"),
     # 'mp4': cv2.VideoWriter_fourcc(*'H264'),
 }
 
@@ -61,7 +62,7 @@ def write_frame(out: cv.VideoWriter, frame: ndarray) -> None:
         cv.FONT_HERSHEY_SIMPLEX,  # font
         1,  # font size
         (255, 255, 255),  # font color
-        2  # stroke
+        2,  # stroke
     )
     out.write(cloned_frame)
 
@@ -70,7 +71,9 @@ def main() -> None:
     if not isdir(VIDEO_DIR):
         mkdir(VIDEO_DIR)
 
-    filename = join(VIDEO_DIR, f"{dt.today().strftime('%Y-%m-%d')}.mp4")
+    filename = join(
+        VIDEO_DIR, f"{dt.today().strftime('%Y-%m-%d %H:%M:%S')}.mkv"
+    )
     frames_per_second = 10.0
     res = "720p"
 

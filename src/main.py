@@ -3,11 +3,10 @@ import cv2 as cv
 from datetime import datetime as dt
 from numpy import ndarray
 from typing import Tuple
-from os.path import splitext
+from os import mkdir
+from os.path import splitext, expanduser, isdir, join
 
-filename = "test.mp4"
-frames_per_second = 10.0
-res = "720p"
+VIDEO_DIR = join(expanduser("~"), "video")
 
 # Standard Video Dimensions Sizes
 STD_DIMENSIONS = {
@@ -57,7 +56,7 @@ def write_frame(out: cv.VideoWriter, frame: ndarray) -> None:
     cloned_frame = frame.copy()
     cloned_frame = cv.putText(
         cloned_frame,  # frame to write on
-        dt.now().strftime("%d/%m/%Y %H:%M:%S"),  # displayed text
+        dt.now().strftime("%Y-%m-%d %H:%M:%S"),  # displayed text
         (10, 40),  # position on frame
         cv.FONT_HERSHEY_SIMPLEX,  # font
         1,  # font size
@@ -68,6 +67,13 @@ def write_frame(out: cv.VideoWriter, frame: ndarray) -> None:
 
 
 def main() -> None:
+    if not isdir(VIDEO_DIR):
+        mkdir(VIDEO_DIR)
+
+    filename = join(VIDEO_DIR, f"{dt.today().strftime('%Y-%m-%d')}.mp4")
+    frames_per_second = 10.0
+    res = "720p"
+
     cap = cv.VideoCapture(0)
     dims = get_dims(cap, res)
     video_type = get_video_type(filename)

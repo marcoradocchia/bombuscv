@@ -7,7 +7,6 @@ from datetime import datetime as dt
 from numpy import ndarray
 from threading import Thread
 from typing import Tuple
-from time import sleep
 from os import mkdir
 from os.path import splitext, expanduser, isdir, join
 from queue import Queue
@@ -29,7 +28,7 @@ VIDEO_TYPE = {
     # 'mp4': cv2.VideoWriter_fourcc(*'H264'),
 }
 
-frames = Queue(10)
+frames = Queue(100)
 
 
 # Set resolution for the video capture
@@ -138,18 +137,13 @@ class ImageGrabber(Thread):
     def run(self) -> None:
         global frames
         while self.cap.isOpened():
-            try:
-                _, frame = self.cap.read()
-                frames.put(
-                    {
-                        "date_time": dt.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "frame": frame,
-                    }
-                )
-            except KeyboardInterrupt:
-                self.cap.release()
-                self.out.release()
-                exit()
+            _, frame = self.cap.read()
+            frames.put(
+                {
+                    "date_time": dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "frame": frame,
+                }
+            )
 
 
 class Main(Thread):

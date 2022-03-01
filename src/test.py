@@ -10,7 +10,7 @@ from os import mkdir
 from os.path import splitext, expanduser, isdir, join
 
 VIDEO_DIR = join(expanduser("~"), "video")
-REC_DELAY = 3
+REC_DELAY = 5
 # Standard Video Dimensions Sizes
 STD_DIMENSIONS = {
     "360p": (480, 360),
@@ -98,6 +98,12 @@ def get_args() -> argparse.Namespace:
 
 
 def motion_detected(prev_frame, frame) -> bool:
+    # frame = cv.resize(
+    #     frame, STD_DIMENSIONS["360p"], interpolation=cv.INTER_AREA
+    # )
+    # prev_frame = cv.resize(
+    #     prev_frame, STD_DIMENSIONS["360p"], interpolation=cv.INTER_AREA
+    # )
     proc_frame = cv.absdiff(prev_frame, frame)
     proc_frame = cv.cvtColor(proc_frame, cv.COLOR_BGR2GRAY)
     proc_frame = cv.GaussianBlur(proc_frame, (21, 21), 0)

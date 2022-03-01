@@ -5,12 +5,13 @@ from genericpath import isfile
 import cv2 as cv
 from datetime import datetime as dt
 from numpy import ndarray
+from threading import Thread
 from typing import Tuple
+from time import sleep
 from os import mkdir
 from os.path import splitext, expanduser, isdir, join
+from queue import Queue
 
-VIDEO_DIR = join(expanduser("~"), "video")
-REC_DELAY = 5
 # Standard Video Dimensions Sizes
 STD_DIMENSIONS = {
     "360p": (480, 360),
@@ -27,6 +28,8 @@ VIDEO_TYPE = {
     "mkv": cv.VideoWriter_fourcc(*"XVID"),
     # 'mp4': cv2.VideoWriter_fourcc(*'H264'),
 }
+
+frames = Queue(10)
 
 
 # Set resolution for the video capture
@@ -56,10 +59,10 @@ def get_video_type(filename: str) -> cv.VideoWriter_fourcc:
 
 
 def write_frame(out: cv.VideoWriter, frame: ndarray) -> None:
-    cloned_frame = frame.copy()
+    cloned_frame = frame["frame"].copy()
     cloned_frame = cv.putText(
         cloned_frame,  # frame to write on
-        dt.now().strftime("%Y-%m-%d %H:%M:%S"),  # displayed text
+        frame["date_time"],  # displayed text
         (10, 40),  # position on frame
         cv.FONT_HERSHEY_SIMPLEX,  # font
         1,  # font size
@@ -97,13 +100,7 @@ def get_args() -> argparse.Namespace:
     return argparser.parse_args()
 
 
-def motion_detected(prev_frame, frame) -> bool:
-    # frame = cv.resize(
-    #     frame, STD_DIMENSIONS["360p"], interpolation=cv.INTER_AREA
-    # )
-    # prev_frame = cv.resize(
-    #     prev_frame, STD_DIMENSIONS["360p"], interpolation=cv.INTER_AREA
-    # )
+def motion_detected(prev_frame, frame):
     proc_frame = cv.absdiff(prev_frame, frame)
     proc_frame = cv.cvtColor(proc_frame, cv.COLOR_BGR2GRAY)
     proc_frame = cv.GaussianBlur(proc_frame, (21, 21), 0)
@@ -112,68 +109,101 @@ def motion_detected(prev_frame, frame) -> bool:
     contours, _ = cv.findContours(
         proc_frame, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE
     )
-    if len(contours) > 0:
-        return True
-    return False
+    return contours
+
+
+class ImageGrabber(Thread):
+    def __init__(
+        self,
+        video: str,
+        resolution: str,
+    ) -> None:
+        Thread.__init__(self)
+        if video:
+            if isfile(video):
+                # video input
+                self.cap = cv.VideoCapture(expanduser(video))
+            else:
+                print("No video found")
+                exit()
+        else:
+            # camera input
+            self.cap = cv.VideoCapture(0)
+        if not resolution:
+            # defaulting to 720p
+            resolution = "720p"
+        self.dims = get_dims(cap=self.cap, res=resolution)
+        set_cap_props(cap=self.cap, dims=self.dims)
+
+    def run(self) -> None:
+        global frames
+        while self.cap.isOpened():
+            try:
+                _, frame = self.cap.read()
+                frames.put(
+                    {
+                        "date_time": dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "frame": frame,
+                    }
+                )
+            except KeyboardInterrupt:
+                self.cap.release()
+                self.out.release()
+                exit()
+
+
+class Main(Thread):
+    def __init__(
+        self, quiet: bool, cap: cv.VideoCapture, dims: Tuple[int, int]
+    ) -> None:
+        Thread.__init__(self)
+        self.rec_delay = 3
+        video_dir = join(expanduser("~"), "video")
+        # output directory
+        if not isdir(video_dir):
+            mkdir(video_dir)
+        filename = join(
+            video_dir, f"{dt.today().strftime('%Y-%m-%d_%H:%M:%S')}.mkv"
+        )
+        video_type = get_video_type(filename)
+        self.fps = cap.get(cv.CAP_PROP_FPS)
+        self.out = cv.VideoWriter(filename, video_type, self.fps, dims)
+        if not quiet:
+            print(
+                "Starting recording:\n"
+                "Resolution: "
+                f"{int(cap.get(cv.CAP_PROP_FRAME_WIDTH))}x"
+                f"{int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))}\n"
+                f"Frames per second: {int(cap.get(cv.CAP_PROP_FPS))}"
+            )
+        self.prev_frame = None
+
+    def run(self) -> None:
+        global frames
+        self.prev_frame = frames.get()
+        self.frame = frames.get()
+        while True:
+            if motion_detected(
+                prev_frame=self.prev_frame["frame"], frame=self.frame["frame"]
+            ):
+                # if motion is detected record for REC_DELAY seconds
+                for _ in range(int(self.rec_delay * self.fps)):
+                    write_frame(out=self.out, frame=self.frame)
+                    self.prev_frame = self.frame
+                    self.frame = frames.get()
+            else:
+                self.prev_frame = self.frame
+                self.frame = frames.get()
 
 
 def main() -> None:
     args = get_args()
-
-    if args.video:
-        if isfile(args.video):
-            # video input
-            cap = cv.VideoCapture(expanduser(args.video))
-        else:
-            print("No video found")
-            exit()
-    else:
-        # camera input
-        cap = cv.VideoCapture(0)
-
-    # output directory
-    if not isdir(VIDEO_DIR):
-        mkdir(VIDEO_DIR)
-
-    if not args.resolution:
-        dims = get_dims(cap=cap, res="720p")
-    else:
-        dims = get_dims(cap=cap, res=args.resolution)
-    filename = join(
-        VIDEO_DIR, f"{dt.today().strftime('%Y-%m-%d_%H:%M:%S')}.mkv"
-    )
-    video_type = get_video_type(filename)
-    set_cap_props(cap=cap, dims=dims)
-    fps = cap.get(cv.CAP_PROP_FPS)
-
-    out = cv.VideoWriter(filename, video_type, fps, dims)
-
-    if not args.quiet:
-        print(
-            "Starting recording:\n"
-            "Resolution: "
-            f"{int(cap.get(cv.CAP_PROP_FRAME_WIDTH))}x"
-            f"{int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))}\n"
-            f"Frames per second: {int(cap.get(cv.CAP_PROP_FPS))}"
-        )
-
-    _, prev_frame = cap.read()
-    _, frame = cap.read()
-    while cap.isOpened():
-        try:
-            if motion_detected(prev_frame=prev_frame, frame=frame):
-                # if motion is detected record for REC_DELAY seconds
-                for _ in range(int(REC_DELAY * fps)):
-                    write_frame(out=out, frame=frame)
-                    prev_frame = frame
-                    _, frame = cap.read()
-            else:
-                prev_frame = frame
-                _, frame = cap.read()
-        except KeyboardInterrupt:
-            cap.release()
-            out.release()
-            break
+    grabber = ImageGrabber(video=args.video, resolution=args.resolution)
+    m = Main(quiet=args.quiet, cap=grabber.cap, dims=grabber.dims)
+    grabber.start()
+    m.start()
+    grabber.join()
+    m.join()
 
 
 if __name__ == "__main__":

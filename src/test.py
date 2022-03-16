@@ -45,7 +45,7 @@ def write_frame(out: cv.VideoWriter, frame: ndarray) -> None:
         cloned_frame,  # frame to write on
         frame["date_time"],  # displayed text
         (10, 40),  # position on frame
-        cv.FONT_HERSHEY_SIMPLEX,  # font
+        cv.FONT_HERSHEY_PLAIN,  # font
         1,  # font size
         (255, 255, 255),  # font color
         2,  # stroke
@@ -146,11 +146,11 @@ class Main(Thread):
             video_dir, f"{dt.today().strftime('%Y-%m-%d_%H:%M:%S')}.mkv"
         )
         video_type = get_video_type(filename)
-        self.fps = cap.get(cv.CAP_PROP_FPS)
         dims = (
             int(cap.get(cv.CAP_PROP_FRAME_WIDTH)),
             int(cap.get(cv.CAP_PROP_FRAME_HEIGHT)),
         )
+        self.fps = cap.get(cv.CAP_PROP_FPS)
         self.out = cv.VideoWriter(filename, video_type, self.fps, dims)
         if not quiet:
             print(

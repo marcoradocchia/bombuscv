@@ -28,26 +28,8 @@ VIDEO_TYPE = {
     # 'mp4': cv2.VideoWriter_fourcc(*'H264'),
 }
 
+# frame queued and in wait to be processed
 frames = Queue(100)
-
-
-# Set resolution for the video capture
-# Function adapted from https://kirr.co/0l6qmh
-def change_res(cap: cv.VideoCapture, width: int, height: int) -> None:
-    cap.set(3, width)
-    cap.set(4, height)
-
-
-# grab resolution dimensions and set video capture to it.
-def get_dims(cap: cv.VideoCapture, res: Tuple[int, int]) -> Tuple[int, int]:
-    width, height = STD_DIMENSIONS[res]
-    if res[0] != cap.get(cv.CAP_PROP_FRAME_WIDTH) or res[1] != cap.get(
-        cv.CAP_PROP_FRAME_HEIGHT
-    ):
-        # change the current caputre device
-        # to the resulting resolution
-        change_res(cap, width, height)
-    return width, height
 
 
 def get_video_type(filename: str) -> cv.VideoWriter_fourcc:
@@ -71,9 +53,11 @@ def write_frame(out: cv.VideoWriter, frame: ndarray) -> None:
     out.write(cloned_frame)
 
 
-def set_cap_props(cap: cv.VideoCapture, dims: Tuple[int, int]) -> None:
-    cap.set(cv.CAP_PROP_FRAME_WIDTH, dims[0])
-    cap.set(cv.CAP_PROP_FRAME_HEIGHT, dims[1])
+def set_cap_props(cap: cv.VideoCapture, res: str, fps: int) -> None:
+    width, height = STD_DIMENSIONS[res]
+    cap.set(cv.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv.CAP_PROP_FRAME_HEIGHT, height)
+    cap.set(cv.CAP_PROP_FPS, fps)
 
 
 def get_args() -> argparse.Namespace:
@@ -96,6 +80,14 @@ def get_args() -> argparse.Namespace:
     argparser.add_argument(
         "-q", "--quiet", action="store_true", help="wheter to mute the output"
     )
+    argparser.add_argument(
+        "-f",
+        "--fps",
+        type=int,
+        metavar="<fps>",
+        help="sets che fps for capture and video write",
+        choices=[5, 10, 30, 60],
+    )
     return argparser.parse_args()
 
 
@@ -112,11 +104,7 @@ def motion_detected(prev_frame, frame):
 
 
 class ImageGrabber(Thread):
-    def __init__(
-        self,
-        video: str,
-        resolution: str,
-    ) -> None:
+    def __init__(self, video: str, resolution: str, fps: int) -> None:
         Thread.__init__(self)
         if video:
             if isfile(video):
@@ -128,11 +116,13 @@ class ImageGrabber(Thread):
         else:
             # camera input
             self.cap = cv.VideoCapture(0)
-        if not resolution:
-            # defaulting to 720p
+        if resolution is None:
+            # default resolution
             resolution = "720p"
-        self.dims = get_dims(cap=self.cap, res=resolution)
-        set_cap_props(cap=self.cap, dims=self.dims)
+        if fps is None:
+            # default fps
+            fps = 10
+        set_cap_props(cap=self.cap, res=resolution, fps=fps)
 
     def run(self) -> None:
         global frames
@@ -147,9 +137,7 @@ class ImageGrabber(Thread):
 
 
 class Main(Thread):
-    def __init__(
-        self, quiet: bool, cap: cv.VideoCapture, dims: Tuple[int, int]
-    ) -> None:
+    def __init__(self, quiet: bool, cap: cv.VideoCapture) -> None:
         Thread.__init__(self)
         self.rec_delay = 3
         video_dir = join(expanduser("~"), "video")
@@ -161,6 +149,10 @@ class Main(Thread):
         )
         video_type = get_video_type(filename)
         self.fps = cap.get(cv.CAP_PROP_FPS)
+        dims = (
+            int(cap.get(cv.CAP_PROP_FRAME_WIDTH)),
+            int(cap.get(cv.CAP_PROP_FRAME_HEIGHT)),
+        )
         self.out = cv.VideoWriter(filename, video_type, self.fps, dims)
         if not quiet:
             print(
@@ -168,7 +160,7 @@ class Main(Thread):
                 "Resolution: "
                 f"{int(cap.get(cv.CAP_PROP_FRAME_WIDTH))}x"
                 f"{int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))}\n"
-                f"Frames per second: {int(cap.get(cv.CAP_PROP_FPS))}"
+                f"Frames per second: {int(self.fps)}"
             )
         self.prev_frame = None
 
@@ -192,8 +184,10 @@ class Main(Thread):
 
 def main() -> None:
     args = get_args()
-    grabber = ImageGrabber(video=args.video, resolution=args.resolution)
-    m = Main(quiet=args.quiet, cap=grabber.cap, dims=grabber.dims)
+    grabber = ImageGrabber(
+        video=args.video, resolution=args.resolution, fps=args.fps
+    )
+    m = Main(quiet=args.quiet, cap=grabber.cap)
     grabber.start()
     m.start()
     grabber.join()

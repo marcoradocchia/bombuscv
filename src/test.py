@@ -116,12 +116,10 @@ class ImageGrabber(Thread):
         else:
             # camera input
             self.cap = cv.VideoCapture(0)
-        if resolution is None:
-            # default resolution
-            resolution = "720p"
-        if fps is None:
-            # default fps
-            fps = 10
+        # default resolution
+        resolution = resolution or "720p"
+        # default fps
+        fps = fps or 10
         set_cap_props(cap=self.cap, res=resolution, fps=fps)
 
     def run(self) -> None:

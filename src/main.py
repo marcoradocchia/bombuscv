@@ -25,7 +25,8 @@ from numpy import ndarray
 from os import mkdir
 from os.path import splitext, expanduser, isdir, join
 from queue import Queue
-from threading import Thread
+from threading import Thread, Event
+from typing import Tuple
 
 # Standard Video Dimensions Sizes
 STD_DIMENSIONS = {
@@ -44,55 +45,31 @@ VIDEO_FORMAT = {
     "mkv": cv.VideoWriter_fourcc(*"XVID"),
 }
 
-# BUFFER: frame queued and in wait to be processed
+# frames captured & queued, waiting to be processed
 frames = Queue(10000)
-
-
-def get_video_format(filename: str) -> cv.VideoWriter_fourcc:
-    _, ext = splitext(filename)
-    # retrieve video based on file extension
-    if ext in VIDEO_FORMAT:
-        return VIDEO_FORMAT[ext]
-    # default to mkv in case filename has no extension
-    return VIDEO_FORMAT["mkv"]
-
-
-def write_frame(out: cv.VideoWriter, frame: ndarray) -> None:
-    # TODO: does the it need to be copied? it is copied to avoid writing date
-    # on the frame needed for frame comparison in motion detection
-    cloned_frame = frame["frame"].copy()
-    # write date and time on frame before writing it to output file
-    cloned_frame = cv.putText(
-        cloned_frame,  # frame to write on
-        frame["date_time"],  # displayed text
-        (10, 40),  # position on frame
-        cv.FONT_HERSHEY_DULPEX,  # font
-        1,  # font size
-        (255, 255, 255),  # font color: white
-        2,  # stroke
-    )
-    # write frame to output file
-    out.write(cloned_frame)
-
-
-def set_cap_props(cap: cv.VideoCapture, res: str, fps: int) -> None:
-    # get frame dimensions
-    width, height = STD_DIMENSIONS[res]
-    # set capture frame width & height
-    cap.set(cv.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv.CAP_PROP_FRAME_HEIGHT, height)
-    # set capture framerate
-    cap.set(cv.CAP_PROP_FPS, fps)
 
 
 def get_args() -> argparse.Namespace:
     argparser = ArgumentParser(allow_abbrev=False)
     argparser.add_argument(
-        "-v",
-        "--video",
-        type=str,
-        metavar="<path_to_vid>",
-        help="path of the video file",
+        "-d",
+        "--duration",
+        type=int,
+        metavar="<sec>",
+        help=(
+            "keep recording for <sec> seconds after motion detected"
+            " (defaults to 3 seconds)"
+        ),
+        default=3,
+    )
+    argparser.add_argument(
+        "-f",
+        "--fps",
+        type=int,
+        metavar="<fps>",
+        help="sets che fps for capture and video write",
+        choices=[5, 10, 30, 60],
+        default=10,
     )
     argparser.add_argument(
         "-r",
@@ -103,45 +80,35 @@ def get_args() -> argparse.Namespace:
         # valid resolution formats are the one listed in the global
         # STD_DIMENSIONS dictionary
         choices=list(STD_DIMENSIONS),
+        default="720p",
     )
     argparser.add_argument(
         "-q", "--quiet", action="store_true", help="wheter to mute the output"
     )
     argparser.add_argument(
-        "-f",
-        "--fps",
-        type=int,
-        metavar="<fps>",
-        help="sets che fps for capture and video write",
-        choices=[5, 10, 30, 60],
-    )
-    argparser.add_argument(
-        "-d",
-        "--duration",
-        type=int,
-        metavar="<sec>",
-        help="keep recording for <sec> seconds after motion has been detected",
-        default=3,
+        "-v",
+        "--video",
+        type=str,
+        metavar="<path_to_vid>",
+        help="path of the video file",
     )
     return argparser.parse_args()
 
 
-def motion_detected(prev_frame, frame):
-    proc_frame = cv.absdiff(prev_frame, frame)
-    proc_frame = cv.cvtColor(proc_frame, cv.COLOR_BGR2GRAY)
-    proc_frame = cv.GaussianBlur(proc_frame, (21, 21), 0)
-    proc_frame = cv.threshold(proc_frame, 30, 255, cv.THRESH_BINARY)[1]
-    proc_frame = cv.dilate(proc_frame, None, iterations=3)
-    contours, _ = cv.findContours(
-        proc_frame, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE
-    )
-    return contours
+class FrameGrabber(Thread):
+    """
+    FrameGrabber thread class: frames are grabbed and stored in frames queue
 
+    Parameters:
+    -----------
+    video: video file path, if None use camera input
+    resolution: resolution of the video capture
+    fps: framerate of the videocapture
+    """
 
-# frame grabbing thread: frames are grabbed and stored in buffer
-class ImageGrabber(Thread):
     def __init__(self, video: str, resolution: str, fps: int) -> None:
         Thread.__init__(self)
+        self.terminate = Event()
         # if video option is provided, then use video resource instead of
         # camera input
         if video:
@@ -152,15 +119,20 @@ class ImageGrabber(Thread):
                 print("No video found")
                 exit()
         else:
-            # camera input
+            # define camera input
             self.cap = cv.VideoCapture(0)
-        # default resolution
-        resolution = resolution or "720p"
-        # default fps
-        fps = fps or 10
-        set_cap_props(cap=self.cap, res=resolution, fps=fps)
+            # get frame dimensions
+            width, height = STD_DIMENSIONS[resolution]
+            # set capture frame width & height
+            self.cap.set(cv.CAP_PROP_FRAME_WIDTH, width)
+            self.cap.set(cv.CAP_PROP_FRAME_HEIGHT, height)
+            # set capture framerate
+            self.cap.set(cv.CAP_PROP_FPS, fps)
 
     def run(self) -> None:
+        """
+        Run thread
+        """
         global frames
         while self.cap.isOpened():
             _, frame = self.cap.read()
@@ -171,13 +143,31 @@ class ImageGrabber(Thread):
                 }
             )
 
+    def stop(self) -> None:
+        """
+        Stop thread safely releasing video capture
+        """
+        self.cap.release()
+        self.terminate.set()
+
 
 # main thread
 class Main(Thread):
-    def __init__(self, cap: cv.VideoCapture, quiet: bool, duration) -> None:
+    """
+    Main thread class
+
+    Parameters:
+    -----------
+    cap: instance of cv.VideoCapture resource
+    duration: integer number of seconds to keep recording after motion detected
+    quiet: wheter to be quiet (no prints) or to be verbose (output prints)
+    """
+
+    def __init__(
+        self, cap: cv.VideoCapture, duration: int, quiet: bool
+    ) -> None:
         Thread.__init__(self)
-        # keep recording for ``duration'' seconds after motion has been
-        # detected
+        # keep recording for ``duration'' seconds after motion been detected
         self.duration = duration
         # output video directory
         video_dir = join(expanduser("~"), "video")
@@ -188,24 +178,32 @@ class Main(Thread):
             video_dir, f"{dt.today().strftime('%Y-%m-%d_%H:%M:%S')}.mkv"
         )
         # retrieve video format chosen based on extension
-        video_format = get_video_format(filename)
+        video_format = self._get_video_format(filename)
         # set VideoWriter resolution & framerate based on video capture values
         dims = (
             int(cap.get(cv.CAP_PROP_FRAME_WIDTH)),
             int(cap.get(cv.CAP_PROP_FRAME_HEIGHT)),
         )
         self.fps = cap.get(cv.CAP_PROP_FPS)
-        self.out = cv.VideoWriter(filename, video_format, self.fps, dims)
+        self.writer = cv.VideoWriter(filename, video_format, self.fps, dims)
         # if not in quiet mode print resolution & framerate
         if not quiet:
             print(
-                "Starting recording:\n"
-                "Resolution: "
+                "Starting recording\n"
+                "├─ Resolution: "
                 f"{int(cap.get(cv.CAP_PROP_FRAME_WIDTH))}x"
                 f"{int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))}\n"
-                f"Frames per second: {int(self.fps)}"
+                f"└─ Frames per second: {int(self.fps)}"
             )
         self.prev_frame = None  # initialize previous frame to none
+
+    def _get_video_format(self, filename: str) -> cv.VideoWriter_fourcc:
+        _, ext = splitext(filename)
+        # retrieve video based on file extension
+        if ext in VIDEO_FORMAT:
+            return VIDEO_FORMAT[ext]
+        # default to mkv in case filename has no extension
+        return VIDEO_FORMAT["mkv"]
 
     def _next_frame(self):
         # current frame becomes previous frame and next frame is pulled from
@@ -213,36 +211,71 @@ class Main(Thread):
         self.prev_frame = self.frame
         self.frame = frames.get()
 
+    def _motion_detected(self) -> Tuple[ndarray, ...]:
+        proc_frame = cv.absdiff(self.prev_frame["frame"], self.frame["frame"])
+        proc_frame = cv.cvtColor(proc_frame, cv.COLOR_BGR2GRAY)
+        proc_frame = cv.GaussianBlur(proc_frame, (21, 21), 0)
+        proc_frame = cv.threshold(proc_frame, 30, 255, cv.THRESH_BINARY)[1]
+        proc_frame = cv.dilate(proc_frame, None, iterations=3)
+        contours, _ = cv.findContours(
+            proc_frame, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE
+        )
+        return contours
+
+    def _write_frame(self) -> None:
+        # frame it is copied to avoid writing date on the frame needed for
+        # frame comparison in motion detection
+        cloned_frame = self.frame["frame"].copy()
+        # write date and time on frame before writing it to output file
+        cloned_frame = cv.putText(
+            cloned_frame,  # frame to write on
+            self.frame["date_time"],  # displayed text
+            (10, 40),  # position on frame
+            cv.FONT_HERSHEY_DUPLEX,  # font
+            1,  # font size
+            (255, 255, 255),  # font color: white
+            2,  # stroke
+        )
+        # write frame to output file
+        self.writer.write(cloned_frame)
+
     def run(self) -> None:
-        global frames  # TODO: is it needed?
+        global frames
         # grab a couple of frames from the the que and enter main loop
         self.prev_frame = frames.get()
         self.frame = frames.get()
-        while True:
-            if motion_detected(
-                prev_frame=self.prev_frame["frame"], frame=self.frame["frame"]
-            ):
+        # start writing loop which ends only when writer is released
+        while self.writer.isOpened():
+            if self._motion_detected():
                 # if motion is detected record for <duration> seconds:
                 # need to convert duration of recording in number of frames by
                 # multiplying duration in seconds by frames per seconds value
                 for _ in range(int(self.duration * self.fps)):
-                    write_frame(out=self.out, frame=self.frame)
+                    self._write_frame()
                     self._next_frame()
             else:
                 # if motion is not detected keep pulling frames from queue
                 self._next_frame()
 
+    def stop(self) -> None:
+        """
+        Stop thread safely releasing video writer
+        """
+        self.writer.release()
+
 
 def main() -> None:
     args = get_args()  # get command line arguments
-    grabber = ImageGrabber(
+    grabber = FrameGrabber(
         video=args.video, resolution=args.resolution, fps=args.fps
     )
     m = Main(cap=grabber.cap, quiet=args.quiet, duration=args.duration)
-    grabber.start()
-    m.start()
-    grabber.join()
-    m.join()
+    try:
+        grabber.start()
+        m.start()
+    except Exception:  # TODO: make grabber and main stop
+        grabber.stop()
+        m.stop()
 
 
 if __name__ == "__main__":

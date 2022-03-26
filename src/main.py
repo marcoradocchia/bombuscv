@@ -25,7 +25,7 @@ from numpy import ndarray
 from os import mkdir
 from os.path import splitext, expanduser, isdir, join
 from queue import Queue
-from threading import Thread, Event
+from threading import Thread
 from typing import Tuple
 
 # Standard Video Dimensions Sizes
@@ -67,30 +67,36 @@ def get_args() -> argparse.Namespace:
         "--fps",
         type=int,
         metavar="<fps>",
-        help="sets che fps for capture and video write",
+        help="framerate for capture and video write (defaults to 10 fps)",
         choices=[5, 10, 30, 60],
         default=10,
+    )
+    argparser.add_argument(
+        "-o",
+        "--no-overlay",
+        action="store_true",
+        help="disable date & time overlay on video frames",
+    )
+    argparser.add_argument(
+        "-q", "--quiet", action="store_true", help="mute output"
     )
     argparser.add_argument(
         "-r",
         "--resolution",
         type=str,
         metavar="<res>",
-        help="resolution of the video capture",
+        help="resolution of the video capture (defaults to 720p)",
         # valid resolution formats are the one listed in the global
         # STD_DIMENSIONS dictionary
         choices=list(STD_DIMENSIONS),
         default="720p",
     )
     argparser.add_argument(
-        "-q", "--quiet", action="store_true", help="wheter to mute the output"
-    )
-    argparser.add_argument(
         "-v",
         "--video",
         type=str,
         metavar="<path_to_vid>",
-        help="path of the video file",
+        help="path of the video file to use rather than video capture",
     )
     return argparser.parse_args()
 
@@ -108,7 +114,6 @@ class FrameGrabber(Thread):
 
     def __init__(self, video: str, resolution: str, fps: int) -> None:
         Thread.__init__(self)
-        self.terminate = Event()
         # if video option is provided, then use video resource instead of
         # camera input
         if video:
@@ -148,7 +153,6 @@ class FrameGrabber(Thread):
         Stop thread safely releasing video capture
         """
         self.cap.release()
-        self.terminate.set()
 
 
 # main thread
@@ -160,15 +164,22 @@ class Main(Thread):
     -----------
     cap: instance of cv.VideoCapture resource
     duration: integer number of seconds to keep recording after motion detected
+    no_overlay: disables date & time overlay on video frames
     quiet: wheter to be quiet (no prints) or to be verbose (output prints)
     """
 
     def __init__(
-        self, cap: cv.VideoCapture, duration: int, quiet: bool
+        self,
+        cap: cv.VideoCapture,
+        duration: int,
+        no_overlay: bool,
+        quiet: bool,
     ) -> None:
         Thread.__init__(self)
         # keep recording for ``duration'' seconds after motion been detected
         self.duration = duration
+        # disable date & time overlay on video frames
+        self.no_overlay = no_overlay
         # output video directory
         video_dir = join(expanduser("~"), "video")
         if not isdir(video_dir):  # if directory doesn't exits, create it
@@ -226,16 +237,19 @@ class Main(Thread):
         # frame it is copied to avoid writing date on the frame needed for
         # frame comparison in motion detection
         cloned_frame = self.frame["frame"].copy()
-        # write date and time on frame before writing it to output file
-        cloned_frame = cv.putText(
-            cloned_frame,  # frame to write on
-            self.frame["date_time"],  # displayed text
-            (10, 40),  # position on frame
-            cv.FONT_HERSHEY_DUPLEX,  # font
-            1,  # font size
-            (255, 255, 255),  # font color: white
-            2,  # stroke
-        )
+        # if no_overlay option is selected, date and time overlay on frame is
+        # disabled
+        if not self.no_overlay:
+            # write date and time on frame before writing it to output file
+            cloned_frame = cv.putText(
+                cloned_frame,  # frame to write on
+                self.frame["date_time"],  # displayed text
+                (10, 40),  # position on frame
+                cv.FONT_HERSHEY_DUPLEX,  # font
+                1,  # font size
+                (255, 255, 255),  # font color: white
+                2,  # stroke
+            )
         # write frame to output file
         self.writer.write(cloned_frame)
 
@@ -269,13 +283,16 @@ def main() -> None:
     grabber = FrameGrabber(
         video=args.video, resolution=args.resolution, fps=args.fps
     )
-    m = Main(cap=grabber.cap, quiet=args.quiet, duration=args.duration)
-    try:
-        grabber.start()
-        m.start()
-    except Exception:  # TODO: make grabber and main stop
-        grabber.stop()
-        m.stop()
+    m = Main(
+        cap=grabber.cap,
+        duration=args.duration,
+        no_overlay=args.no_overlay,
+        quiet=args.quiet,
+    )
+    grabber.start()
+    m.start()
+    grabber.join()
+    m.join()
 
 
 if __name__ == "__main__":

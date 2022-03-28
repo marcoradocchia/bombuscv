@@ -46,7 +46,7 @@ VIDEO_FORMAT = {
 }
 
 # frames captured & queued, waiting to be processed
-frames = Queue(10000)
+frames = Queue(1000)
 
 
 def get_args() -> argparse.Namespace:

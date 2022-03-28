@@ -21,11 +21,10 @@ import argparse
 from argparse import ArgumentParser
 from datetime import datetime as dt
 from genericpath import isfile
+from multiprocessing import Process, Queue
 from numpy import ndarray
 from os import mkdir
 from os.path import splitext, expanduser, isdir, join
-from queue import Queue
-from threading import Thread
 from typing import Tuple
 
 # Standard Video Dimensions Sizes
@@ -46,7 +45,10 @@ VIDEO_FORMAT = {
 }
 
 # frames captured & queued, waiting to be processed
+# TODO: this value is currently hardcoded, but needs to be evaluated depending
+# on how much ram is available; as it is now, it may cause the program to crash
 frames = Queue(1000)
+# TODO: implement method that checks if frames queue has been filled
 
 
 def get_args() -> argparse.Namespace:
@@ -101,9 +103,9 @@ def get_args() -> argparse.Namespace:
     return argparser.parse_args()
 
 
-class FrameGrabber(Thread):
+class FrameGrabber(Process):
     """
-    FrameGrabber thread class: frames are grabbed and stored in frames queue
+    FrameGrabber process class: frames are grabbed and stored in frames queue
 
     Parameters:
     -----------
@@ -113,7 +115,7 @@ class FrameGrabber(Thread):
     """
 
     def __init__(self, video: str, resolution: str, fps: int) -> None:
-        Thread.__init__(self)
+        Process.__init__(self)
         # if video option is provided, then use video resource instead of
         # camera input
         if video:
@@ -121,8 +123,7 @@ class FrameGrabber(Thread):
                 # video input
                 self.cap = cv.VideoCapture(expanduser(video))
             else:
-                print("No video found")
-                exit()
+                exit("No video found")
         else:
             # define camera input
             self.cap = cv.VideoCapture(0)
@@ -136,7 +137,7 @@ class FrameGrabber(Thread):
 
     def run(self) -> None:
         """
-        Run thread
+        Run child process
         """
         global frames
         while self.cap.isOpened():
@@ -150,22 +151,22 @@ class FrameGrabber(Thread):
 
     def stop(self) -> None:
         """
-        Stop thread safely releasing video capture
+        Stop thread safely releasing video capture: as soon as the cap is
+        released, the run loop ends its job
         """
         self.cap.release()
 
 
-# main thread
-class Main(Thread):
+class Main(Process):
     """
-    Main thread class
+    Main process class
 
     Parameters:
     -----------
     cap: instance of cv.VideoCapture resource
     duration: integer number of seconds to keep recording after motion detected
     no_overlay: disables date & time overlay on video frames
-    quiet: wheter to be quiet (no prints) or to be verbose (output prints)
+    quiet: disables all output
     """
 
     def __init__(
@@ -175,7 +176,7 @@ class Main(Thread):
         no_overlay: bool,
         quiet: bool,
     ) -> None:
-        Thread.__init__(self)
+        Process.__init__(self)
         # keep recording for ``duration'' seconds after motion been detected
         self.duration = duration
         # disable date & time overlay on video frames
@@ -204,7 +205,8 @@ class Main(Thread):
                 "├─ Resolution: "
                 f"{int(cap.get(cv.CAP_PROP_FRAME_WIDTH))}x"
                 f"{int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))}\n"
-                f"└─ Frames per second: {int(self.fps)}"
+                f"├─ Frames per second: {int(self.fps)}\n"
+                f"└─ Output file: {filename}"
             )
         self.prev_frame = None  # initialize previous frame to none
 
@@ -248,7 +250,7 @@ class Main(Thread):
                 cv.FONT_HERSHEY_DUPLEX,  # font
                 1,  # font size
                 (255, 255, 255),  # font color: white
-                2,  # stroke
+                1,  # stroke
             )
         # write frame to output file
         self.writer.write(cloned_frame)
@@ -265,15 +267,20 @@ class Main(Thread):
                 # need to convert duration of recording in number of frames by
                 # multiplying duration in seconds by frames per seconds value
                 for _ in range(int(self.duration * self.fps)):
+                    # WARNING: in this loop frames might accumulate in queue
+                    # faster than then the this process is able to process
+                    # them, so if the queue gets full frame drops might occour
                     self._write_frame()
                     self._next_frame()
             else:
                 # if motion is not detected keep pulling frames from queue
+                # and try to empty it
                 self._next_frame()
 
     def stop(self) -> None:
         """
-        Stop thread safely releasing video writer
+        Stop thread safely releasing video writer: as soon as the writer is
+        released the run loop ends its job
         """
         self.writer.release()
 
@@ -289,10 +296,16 @@ def main() -> None:
         no_overlay=args.no_overlay,
         quiet=args.quiet,
     )
-    grabber.start()
-    m.start()
-    grabber.join()
-    m.join()
+    try:
+        grabber.start()
+        m.start()
+        grabber.join()
+        m.join()
+    except KeyboardInterrupt:
+        grabber.stop()  # stop grabber subprocess
+        grabber.terminate()
+        m.stop()  # stop m subprocess
+        m.terminate()
 
 
 if __name__ == "__main__":
